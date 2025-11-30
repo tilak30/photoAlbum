@@ -1,0 +1,417 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Vibrant Serverless Photo Album - API Key Auth</title>
+    <!-- Load Tailwind CSS -->
+    <script src="https://cdn.tailwindcss.com"></script>
+    <style>
+        /* Custom styles for a polished look */
+        @import url('https://fonts.googleapis.com/css2?family=Poppins:wght@400;600;700&display=swap');
+        body {
+            font-family: 'Poppins', sans-serif;
+            background: linear-gradient(135deg, #f0f4f8 0%, #e0e7ee 100%); /* Soft gradient background */
+            color: #334155; /* Darker text for contrast */
+        }
+        .card {
+            background-color: #ffffff;
+            border-radius: 1.5rem; /* More rounded corners */
+            box-shadow: 0 10px 25px rgba(0, 0, 0, 0.1); /* Softer, larger shadow */
+            border: none; /* Remove default border */
+        }
+        .primary-btn {
+            background-color: #6366f1; /* Indigo color */
+            transition: background-color 0.2s, transform 0.2s;
+        }
+        .primary-btn:hover {
+            background-color: #4f46e5; /* Darker indigo on hover */
+            transform: translateY(-2px); /* Subtle lift effect */
+        }
+        .input-style {
+            background-color: #f8fafc; /* Light input background */
+            border-color: #cbd5e1; /* Subtle border */
+            color: #334155;
+        }
+        .input-style:focus {
+            border-color: #6366f1; /* Indigo focus border */
+            box-shadow: 0 0 0 2px rgba(99, 102, 241, 0.5); /* Indigo glow on focus */
+        }
+        .img-preview {
+            aspect-ratio: 1 / 1;
+            object-fit: cover;
+            width: 100%;
+            border-radius: 0.75rem; /* Match card rounding */
+            transition: transform 0.3s ease, box-shadow 0.3s ease;
+        }
+        .img-preview:hover {
+            transform: scale(1.05);
+            box-shadow: 0 0 20px rgba(99, 102, 241, 0.4); /* Indigo shadow on hover */
+        }
+        .file-input-label {
+            display: inline-block;
+            cursor: pointer;
+            padding: 0.75rem 1.5rem; /* Larger padding for button feel */
+            border-radius: 0.75rem;
+            background-color: #e2e8f0; /* Light gray button */
+            border: 1px solid #cbd5e1;
+            transition: background-color 0.2s;
+            color: #475569;
+            font-weight: 600;
+        }
+        .file-input-label:hover {
+            background-color: #cbd5e1;
+        }
+
+        /* Animated background blobs for an "interesting" effect */
+        .animated-background {
+            position: fixed;
+            top: 0;
+            left: 0;
+            width: 100%;
+            height: 100%;
+            overflow: hidden;
+            z-index: -1;
+            filter: blur(100px);
+            opacity: 0.5;
+        }
+        .blob {
+            position: absolute;
+            border-radius: 50%;
+            animation: moveBlob 20s infinite alternate;
+            background: linear-gradient(145deg, var(--color1), var(--color2));
+        }
+        .blob:nth-child(1) {
+            width: 300px; height: 300px; top: 10%; left: 10%;
+            --color1: #a78bfa; --color2: #c4b5fd;
+            animation-delay: 0s;
+        }
+        .blob:nth-child(2) {
+            width: 400px; height: 400px; bottom: 5%; right: 15%;
+            --color1: #818cf8; --color2: #a5b4fc;
+            animation-delay: 5s;
+        }
+        .blob:nth-child(3) {
+            width: 250px; height: 250px; top: 50%; left: 25%;
+            --color1: #c4b5fd; --color2: #a78bfa;
+            animation-delay: 10s;
+        }
+        .blob:nth-child(4) {
+            width: 350px; height: 350px; bottom: 20%; left: 5%;
+            --color1: #a5b4fc; --color2: #818cf8;
+            animation-delay: 15s;
+        }
+        @keyframes moveBlob {
+            0% { transform: translate(0, 0) scale(1); }
+            25% { transform: translate(100px, -50px) scale(1.1); }
+            50% { transform: translate(-100px, 100px) scale(0.9); }
+            75% { transform: translate(50px, -150px) scale(1.2); }
+            100% { transform: translate(0, 0) scale(1); }
+        }
+    </style>
+</head>
+<body class="p-4 md:p-12 min-h-screen relative">
+
+    <!-- Animated Background Blobs -->
+    <div class="animated-background">
+        <div class="blob"></div>
+        <div class="blob"></div>
+        <div class="blob"></div>
+        <div class="blob"></div>
+    </div>
+
+    <!-- Header -->
+    <header class="text-center mb-12 relative z-10">
+        <h1 class="text-6xl font-extrabold text-indigo-600 mb-4 drop-shadow-lg">Cloud Photo Vault</h1>
+        <p class="text-2xl text-gray-700">Your memories, instantly searchable.</p>
+    </header>
+
+    <main class="max-w-7xl mx-auto relative z-10">
+        <div id="status-message" class="hidden p-4 mb-6 rounded-xl text-sm font-medium shadow-md" role="alert"></div>
+
+        <!-- Main Content Grid for Upload and Search -->
+        <div class="grid grid-cols-1 lg:grid-cols-3 gap-10">
+
+            <!-- Upload Panel -->
+            <div class="lg:col-span-1 card p-8 h-fit">
+                <h2 class="text-3xl font-bold mb-6 border-b-2 border-indigo-200 pb-3 text-indigo-600">Upload Your Photo</h2>
+
+                <div class="space-y-6">
+                    <!-- File Input -->
+                    <div>
+                        <label for="file-input" class="block text-base font-semibold mb-2 text-gray-700">Select Image File:</label>
+                        <input type="file" id="file-input" accept="image/*" class="hidden">
+                        <label for="file-input" id="file-label" class="file-input-label w-full text-center">
+                            <svg class="w-6 h-6 inline-block mr-2" fill="none" stroke="currentColor" viewBox="0 0 24 24" xmlns="http://www.w3.org/2000/svg"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M4 16v1a3 3 0 003 3h10a3 3 0 003-3v-1m-4-8l-4-4m0 0L8 8m4-4v12"></path></svg>
+                            Choose File
+                        </label>
+                    </div>
+
+                    <!-- Upload Button -->
+                    <button id="upload-btn" class="w-full primary-btn text-white font-semibold py-3 rounded-lg text-lg flex items-center justify-center">
+                        <svg class="w-6 h-6 mr-2" fill="none" stroke="currentColor" viewBox="0 0 24 24" xmlns="http://www.w3.org/2000/svg"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M7 16a4 4 0 01-.88-7.903A5 5 0 1115.9 6L16 6a5 5 0 011 9.9M15 13l-3-3m0 0l-3 3m3-3v12"></path></svg>
+                        Upload Photo
+                    </button>
+                    <p class="text-sm text-gray-500 mt-3 text-center">Max file size for upload is typically 10MB via API Gateway.</p>
+                </div>
+            </div>
+
+            <!-- Search Panel and Results -->
+            <div class="lg:col-span-2 space-y-8">
+                <div class="card p-8">
+                    <h2 class="text-3xl font-bold mb-6 border-b-2 border-indigo-200 pb-3 text-indigo-600">Explore Your Photos</h2>
+
+                    <!-- Search Input and Button -->
+                    <div class="flex flex-col sm:flex-row space-y-4 sm:space-y-0 sm:space-x-4">
+                        <input type="search" id="search-input" placeholder="Search by description or objects (e.g., 'sunset beach', 'smiling dog')"
+                               class="flex-grow p-4 rounded-lg input-style text-lg">
+                        <button id="search-btn" class="primary-btn text-white font-semibold px-6 py-3 rounded-lg text-lg flex items-center justify-center">
+                            <svg class="w-6 h-6 mr-2" fill="none" stroke="currentColor" viewBox="0 0 24 24" xmlns="http://www.w3.org/2000/svg"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M21 21l-6-6m2-5a7 7 0 11-14 0 7 7 0 0114 0z"></path></svg>
+                            Search
+                        </button>
+                    </div>
+                </div>
+
+                <!-- Photo Results Grid -->
+                <div class="card p-8 min-h-[400px]">
+                    <h3 class="text-2xl font-semibold mb-6 text-gray-700">Results: <span id="result-count" class="text-indigo-600 font-bold">0</span> Photos Found</h3>
+                    <div id="photo-grid" class="grid grid-cols-2 sm:grid-cols-3 lg:grid-cols-4 gap-6">
+                        <!-- Image results will be dynamically inserted here -->
+                    </div>
+                    <div id="no-results" class="text-center py-16 text-gray-500 hidden">
+                        <p class="text-xl">Start by searching for your treasured moments!</p>
+                        <p class="text-md mt-2">No custom labels? No problem! AI will find objects in your photos.</p>
+                    </div>
+                </div>
+            </div>
+        </div>
+    </main>
+
+    <script>
+        // --- API Key Configuration ---
+        const API_KEY = 'PpnYLoPTL19QwS9Avp2IA26LDeIDSn2Q9vNTKxnd'; 
+        
+        // --- AWS Configuration (MUST MATCH YOUR DEPLOYMENT) ---
+        const API_BASE_URL = 'https://hkq7n53bf0.execute-api.us-east-1.amazonaws.com/prod'; 
+        const AWS_REGION = 'us-east-1';              
+        const S3_BUCKET_NAME = 'photo-storageb2-tilak';     
+
+        // --- Utility Functions ---
+
+        /**
+         * Displays a status message to the user.
+         * @param {string} message - The text to display.
+         * @param {string} type - 'success' or 'error' or 'info'.
+         */
+        function showStatus(message, type) {
+            const statusDiv = document.getElementById('status-message');
+            statusDiv.textContent = message;
+            statusDiv.classList.remove('hidden', 'bg-red-200', 'text-red-800', 'bg-green-200', 'text-green-800', 'bg-blue-200', 'text-blue-800');
+            if (type === 'success') {
+                statusDiv.classList.add('bg-green-200', 'text-green-800');
+            } else if (type === 'error') {
+                statusDiv.classList.add('bg-red-200', 'text-red-800');
+            } else { // info/default
+                statusDiv.classList.add('bg-blue-200', 'text-blue-800');
+            }
+            // Hide after 7 seconds
+            setTimeout(() => {
+                statusDiv.classList.add('hidden');
+            }, 7000);
+        }
+        
+        // --- Core Application Functions ---
+
+        /**
+         * Handles photo upload via a PUT request to the API Gateway's S3 proxy endpoint.
+         */
+        async function uploadPhoto() {
+            if (!API_KEY) {
+                showStatus('API Key missing. Please set the API_KEY constant.', 'error');
+                return;
+            }
+
+            const fileInput = document.getElementById('file-input');
+            const uploadBtn = document.getElementById('upload-btn');
+
+            if (fileInput.files.length === 0) {
+                showStatus('Please select a file to upload.', 'error');
+                return;
+            }
+
+            const file = fileInput.files[0];
+            const fileName = encodeURIComponent(file.name.replace(/ /g, "_")); // Replace spaces for S3 keys
+            const contentType = file.type || 'application/octet-stream';
+            
+            // The API Gateway path: /photos/{bucketName}/{fileName}
+            const uploadUrl = `${API_BASE_URL}/photos/${S3_BUCKET_NAME}/${fileName}`;
+
+            uploadBtn.textContent = 'Uploading...';
+            uploadBtn.disabled = true;
+
+            try {
+                const fetchResponse = await fetch(uploadUrl, {
+                    method: 'PUT',
+                    // CRITICAL: Pass the determined MIME type and API Key
+                    headers: { 
+                        'Content-Type': contentType,
+                        'X-API-Key': API_KEY 
+                    },
+                    body: file,
+                });
+
+                if (fetchResponse.ok) {
+                    showStatus(`Successfully uploaded "${file.name}". It will be processed and appear in search results shortly!`, 'success');
+                    // Clear inputs
+                    fileInput.value = '';
+                    document.getElementById('file-label').innerHTML = `<svg class="w-6 h-6 inline-block mr-2" fill="none" stroke="currentColor" viewBox="0 0 24 24" xmlns="http://www.w3.org/2000/svg"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M4 16v1a3 3 0 003 3h10a3 3 0 003-3v-1m-4-8l-4-4m0 0L8 8m4-4v12"></path></svg>Choose File`;
+                } else {
+                    const errorBody = await fetchResponse.json().catch(() => fetchResponse.text());
+                    const message = typeof errorBody === 'object' && errorBody.message ? errorBody.message : (typeof errorBody === 'string' ? errorBody : 'Unknown error');
+                    throw new Error(`Upload Failed: HTTP ${fetchResponse.status}. ${message.substring(0, 150)}`);
+                }
+
+            } catch (error) {
+                console.error("Upload Error:", error);
+                showStatus(`Upload failed: ${error.message.substring(0, 150)}. Check API Key and backend configuration.`, 'error');
+            } finally {
+                uploadBtn.textContent = 'Upload Photo';
+                uploadBtn.disabled = false;
+            }
+        }
+
+        /**
+         * Handles photo search via a GET request to the API Gateway's /search endpoint.
+         */
+        async function searchPhotos() {
+            if (!API_KEY) {
+                showStatus('API Key missing. Please set the API_KEY constant.', 'error');
+                return;
+            }
+            
+            const searchInput = document.getElementById('search-input');
+            const photoGrid = document.getElementById('photo-grid');
+            const resultCount = document.getElementById('result-count');
+            const noResults = document.getElementById('no-results');
+            const searchBtn = document.getElementById('search-btn');
+
+            const query = searchInput.value.trim();
+            if (!query) {
+                showStatus('Please enter a search query.', 'error');
+                return;
+            }
+
+            const searchPath = `/search`;
+            const queryString = `?q=${encodeURIComponent(query)}`;
+            const searchUrl = `${API_BASE_URL}${searchPath}${queryString}`;
+
+            searchBtn.textContent = 'Searching...';
+            searchBtn.disabled = true;
+            photoGrid.innerHTML = ''; // Clear old results
+            noResults.classList.add('hidden');
+            resultCount.textContent = 0; // Reset count immediately
+
+            try {
+                const fetchResponse = await fetch(searchUrl, {
+                    method: 'GET',
+                    // Use the X-API-Key header for authorization
+                    headers: {
+                        'X-API-Key': API_KEY
+                    },
+                });
+
+                if (fetchResponse.ok) {
+                    // 1. Get the full API Gateway response object: {statusCode, headers, body}
+                    const responseObj = await fetchResponse.json(); 
+                    
+                    // 2. CRITICAL FIX: Parse the 'body' property to get the array of S3 keys.
+                    // The 'body' is a JSON string containing the file names.
+                    let results = [];
+                    try {
+                        // Ensure the body is a string before parsing
+                        if (typeof responseObj.body === 'string') {
+                            results = JSON.parse(responseObj.body);
+                        } else if (Array.isArray(responseObj)) {
+                            // Fallback for non-proxy integration or direct Lambda response, though less common here
+                            results = responseObj;
+                        }
+                    } catch (e) {
+                        console.error("Error parsing API Gateway response body:", e);
+                        showStatus("Error processing search results format. See console for details.", 'error');
+                        return; // Stop processing if parsing fails
+                    }
+
+
+                    if (results && results.length > 0) {
+                        // --- S3 Public URL Construction ---
+                        const s3BaseUrl = `https://${S3_BUCKET_NAME}.s3.${AWS_REGION}.amazonaws.com/`;
+                        
+                        results.forEach(s3Key => {
+                            // URL encode the key in case of spaces or special characters
+                            const encodedS3Key = encodeURIComponent(s3Key);
+                            const fullImageUrl = s3BaseUrl + encodedS3Key; 
+                            
+                            const imageCard = `
+                                <div class="relative overflow-hidden rounded-xl group cursor-pointer aspect-w-1 aspect-h-1">
+                                    <img src="${fullImageUrl}" 
+                                         alt="Search Result" 
+                                         class="img-preview" 
+                                         onerror="this.onerror=null; this.src='https://placehold.co/400x400/e0e7ee/6366f1?text=Image+Missing';"
+                                    >
+                                    <div class="absolute inset-0 bg-indigo-500 bg-opacity-40 flex items-center justify-center opacity-0 group-hover:opacity-100 transition-opacity p-2">
+                                        <p class="text-white text-xs sm:text-sm font-semibold text-center break-all">${s3Key}</p>
+                                    </div>
+                                </div>
+                            `;
+                            photoGrid.insertAdjacentHTML('beforeend', imageCard);
+                        });
+                        resultCount.textContent = results.length;
+                        showStatus(`Search complete. Found ${results.length} photos.`, 'success');
+                    } else {
+                        noResults.classList.remove('hidden');
+                        resultCount.textContent = 0;
+                        showStatus('No photos matched your search criteria.', 'info'); 
+                    }
+                } else {
+                    const errorBody = await fetchResponse.json().catch(() => fetchResponse.text());
+                    const message = typeof errorBody === 'object' && errorBody.message ? errorBody.message : (typeof errorBody === 'string' ? errorBody : 'Unknown error');
+                    throw new Error(`Search Failed: HTTP ${fetchResponse.status}. ${message.substring(0, 150)}`);
+                }
+
+            } catch (error) {
+                console.error("Search Error:", error);
+                showStatus(`Search failed: ${error.message.substring(0, 150)}. Ensure your API Gateway endpoint and API Key are correct.`, 'error');
+            } finally {
+                searchBtn.textContent = 'Search';
+                searchBtn.disabled = false;
+            }
+        }
+
+        // --- Event Listeners and Initialization ---
+
+        document.addEventListener('DOMContentLoaded', () => {
+            // Initial status message
+            showStatus('Ready to search and upload!', 'info');
+
+            // 1. Setup Upload Button
+            document.getElementById('upload-btn').addEventListener('click', uploadPhoto);
+            
+            // Update file input label text
+            document.getElementById('file-input').addEventListener('change', function(e) {
+                const fileName = e.target.files.length > 0 ? e.target.files[0].name : 'Choose File';
+                document.getElementById('file-label').innerHTML = `<svg class="w-6 h-6 inline-block mr-2" fill="none" stroke="currentColor" viewBox="0 0 24 24" xmlns="http://www.w3.org/2000/svg"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M4 16v1a3 3 0 003 3h10a3 3 0 003-3v-1m-4-8l-4-4m0 0L8 8m4-4v12"></path></svg>${fileName}`;
+            });
+
+            // 2. Setup Search Button
+            document.getElementById('search-btn').addEventListener('click', searchPhotos);
+
+            // Allow search on Enter key
+            document.getElementById('search-input').addEventListener('keypress', function(e) {
+                if (e.key === 'Enter') {
+                    searchPhotos();
+                }
+            });
+        });
+    </script>
+</body>
+</html>
