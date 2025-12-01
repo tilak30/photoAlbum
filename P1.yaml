@@ -1,0 +1,55 @@
+# 1. PIPELINE P1 (Backend Deployment)
+  BackendPipeline:
+    Type: AWS::CodePipeline::Pipeline
+    Properties:
+      RoleArn: !GetAtt CodePipelineServiceRole.Arn
+      Name: !Sub "${AWS::StackName}-Backend-P1"
+      ArtifactStore:
+        Type: S3
+        Location: !Ref PipelineArtifactBucket
+      Stages:
+        # A. Source Stage: Pulls code from GitHub
+        - Name: Source
+          Actions:
+            - Name: GetSource
+              ActionTypeId:
+                Category: Source
+                Owner: ThirdParty
+                Provider: GitHub
+                Version: '1'
+              Configuration:
+                Owner: tilak30 
+                Repo: photoAlbum  
+                Branch: main
+                PollForSourceChanges: 'false'
+                AuthenticationType: OAUTH
+              OutputArtifacts:
+                - Name: SourceArtifact
+              RunOrder: 1
+        # B. Build Stage: Prepares the Lambda code artifact
+        - Name: Build
+          Actions:
+            - Name: BuildLambda
+              InputArtifacts:
+                - Name: SourceArtifact
+              ActionTypeId:
+                Category: Build
+                Owner: AWS
+                Provider: CodeBuild
+                Version: '1'
+              Configuration: 
+                ProjectName: !Ref LambdaCodeBuildProject
+              OutputArtifacts:
+                - Name: BuildArtifact
+              RunOrder: 1
+        # C. Deploy Stage: Updates the code on the Lambda functions
+        - Name: Deploy
+          Actions:
+            - Name: DeploySearchLambda
+              ActionTypeId: {Category: Deploy, Owner: AWS, Provider: Lambda, Version: '1'}
+              Configuration: {FunctionName: !Ref SearchLambda}
+              InputArtifacts: [{Name: BuildArtifact}]
+            - Name: DeployIndexLambda
+              ActionTypeId: {Category: Deploy, Owner: AWS, Provider: Lambda, Version: '1'}
+              Configuration: {FunctionName: !Ref IndexLambda}
+              InputArtifacts: [{Name: BuildArtifact}]

@@ -1,0 +1,36 @@
+# 2. PIPELINE P2 (Frontend Deployment)
+  FrontendPipeline:
+    Type: AWS::CodePipeline::Pipeline
+    Properties:
+      RoleArn: !GetAtt CodePipelineServiceRole.Arn
+      Name: !Sub "${AWS::StackName}-Frontend-P2"
+      ArtifactStore:
+        Type: S3
+        Location: !Ref PipelineArtifactBucket
+      Stages:
+        # A. Source Stage: Pulls code from GitHub
+        - Name: Source
+          Actions:
+            - Name: GetSource
+              ActionTypeId: {Category: Source, Owner: ThirdParty, Provider: GitHub, Version: '1'}
+              Configuration:
+                Owner: tilak30 
+                Repo: photoAlbum 
+                Branch: main
+                PollForSourceChanges: 'false'
+                AuthenticationType: OAUTH
+              OutputArtifacts:
+                - Name: SourceArtifactFrontend
+              RunOrder: 1
+        # B. Deploy Stage: Uploads code directly to the S3 bucket
+        - Name: Deploy
+          Actions:
+            - Name: DeployFrontend
+              ActionTypeId: {Category: Deploy, Owner: AWS, Provider: S3, Version: '1'}
+              Configuration:
+                BucketName: !Ref FrontendBucket
+                Extract: 'true' # Extract the zip file contents into the bucket
+                # Optionally specify CannedACL: public-read if needed, though policy handles access
+              InputArtifacts:
+                - Name: SourceArtifactFrontend
+              RunOrder: 1

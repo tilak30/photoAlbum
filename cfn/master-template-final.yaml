@@ -1,0 +1,495 @@
+AWSTemplateFormatVersion: '2010-09-09'
+Transform: AWS::Serverless-2016-10-31
+Description: Complete AI Photo Search Application Stack with CI/CD Pipelines (P1 & P2).
+
+Parameters:
+  # Application Parameters
+  OpenSearchEndpoint:
+    Type: String
+    Default: 'search-photos-rlkgaxoxafiswtgnt7sqyvwuay.us-east-1.es.amazonaws.com'
+    Description: Your existing OpenSearch Endpoint (Do not include https://)
+  LexBotId:
+    Type: String
+    Default: 'S1WEY6V3PK'
+    Description: Your Lex Bot ID
+  LexBotAliasId:
+    Type: String
+    Default: 'TSTALIASID'
+    Description: Your Lex Bot Alias ID
+
+  # CI/CD Parameters
+  GitHubOAuthToken:
+    Type: String
+    NoEcho: true
+    Description: Your GitHub personal access token for CodePipeline.
+  GitHubOwner:
+    Type: String
+    Default: your-github-owner # UPDATE THIS TO YOUR GITHUB USERNAME
+  GitHubRepo:
+    Type: String
+    Default: Smart-Cloud-Album # UPDATE THIS TO YOUR REPOSITORY NAME
+  GitHubBranch:
+    Type: String
+    Default: main
+  ArtifactBucketName:
+    Type: String
+    Description: The S3 bucket name for CodePipeline artifacts (must be globally unique).
+    Default: photo-pipeline-artifacts-unique-name # UPDATE THIS TO A UNIQUE NAME
+
+Resources:
+  # ==================================================================
+  # 1. IAM ROLES
+  # ==================================================================
+
+  # Role for Lambda Functions (Indexer and Searcher)
+  LambdaExecutionRole:
+    Type: AWS::IAM::Role
+    Properties:
+      AssumeRolePolicyDocument:
+        Version: '2012-10-17'
+        Statement:
+          - Effect: Allow
+            Principal: { Service: lambda.amazonaws.com }
+            Action: sts:AssumeRole
+      ManagedPolicyArns:
+        - arn:aws:iam::aws:policy/service-role/AWSLambdaBasicExecutionRole
+      Policies:
+        - PolicyName: PhotoLambdaPolicy
+          PolicyDocument:
+            Version: '2012-10-17'
+            Statement:
+              - Effect: Allow
+                Action:
+                  - s3:GetObject
+                  - s3:HeadObject
+                  - s3:ListBucket
+                Resource: "*" # Scoped down later if needed, starting broad for flexibility.
+              - Effect: Allow
+                Action: rekognition:DetectLabels
+                Resource: "*"
+              - Effect: Allow
+                Action: lex:RecognizeText
+                Resource: !Sub
+                  - arn:aws:lex:${AWS::Region}:${AWS::AccountId}:bot/${BotId}/alias/${AliasId}
+                  - BotId: !Ref LexBotId
+                    AliasId: !Ref LexBotAliasId
+              - Effect: Allow
+                Action: es:* # OpenSearch (Elasticsearch) access
+                Resource: "*"
+
+  # Role for API Gateway to assume when invoking the S3 PUT (Upload) method
+  APIGatewayS3Role:
+    Type: AWS::IAM::Role
+    Properties:
+      AssumeRolePolicyDocument:
+        Version: '2012-10-17'
+        Statement:
+          - Effect: Allow
+            Principal: { Service: apigateway.amazonaws.com }
+            Action: sts:AssumeRole
+      Policies:
+        - PolicyName: APIGatewayS3Policy
+          PolicyDocument:
+            Version: '2012-10-17'
+            Statement:
+              - Effect: Allow
+                Action: s3:PutObject
+                Resource: !Sub "${PhotosBucket.Arn}/*"
+
+  # Role for CodePipeline to coordinate actions
+  CodePipelineServiceRole:
+    Type: AWS::IAM::Role
+    Properties:
+      AssumeRolePolicyDocument:
+        Version: '2012-10-17'
+        Statement:
+          - Effect: Allow
+            Principal: { Service: codepipeline.amazonaws.com }
+            Action: sts:AssumeRole
+      Policies:
+        - PolicyName: CodePipelineAccess
+          PolicyDocument:
+            Version: '2012-10-17'
+            Statement:
+              - Effect: Allow
+                Action:
+                  - s3:*
+                  - codebuild:StartBuild
+                  - codebuild:BatchGetBuilds
+                  - cloudformation:*
+                  - iam:PassRole
+                  - ssm:GetParameters
+                Resource: '*'
+
+  # Role for CodeBuild to build and deploy artifacts
+  CodeBuildServiceRole:
+    Type: AWS::IAM::Role
+    Properties:
+      AssumeRolePolicyDocument:
+        Version: '2012-10-17'
+        Statement:
+          - Effect: Allow
+            Principal: { Service: codebuild.amazonaws.com }
+            Action: sts:AssumeRole
+      Policies:
+        - PolicyName: CodeBuildPermissions
+          PolicyDocument:
+            Version: '2012-10-17'
+            Statement:
+              - Effect: Allow
+                Action:
+                  - logs:*
+                  - s3:*
+                  - codecommit:GitPull
+                  - lambda:UpdateFunctionCode
+                  - iam:PassRole
+                  - cloudformation:DescribeStacks
+                Resource: '*'
+  
+  # ==================================================================
+  # 2. S3 BUCKETS
+  # ==================================================================
+
+  PhotosBucket:
+    Type: AWS::S3::Bucket
+    Properties:
+      VersioningConfiguration: {Status: Suspended}
+      CorsConfiguration:
+        CorsRules:
+          - AllowedHeaders: ['*']
+            AllowedMethods: [GET, PUT, POST, HEAD]
+            AllowedOrigins: ['*']
+      # Ensure notification config is linked to the Indexer Lambda
+      NotificationConfiguration:
+        LambdaConfigurations:
+          - Event: s3:ObjectCreated:Put
+            Filter: { S3Key: { Rules: [{ Name: suffix, Value: .jpg }, { Name: suffix, Value: .jpeg }] } }
+            Function: !GetAtt IndexLambda.Arn
+
+  FrontendBucket:
+    Type: AWS::S3::Bucket
+    Properties:
+      WebsiteConfiguration: {IndexDocument: index.html, ErrorDocument: index.html}
+      AccessControl: PublicRead # Required for static website hosting
+      
+  FrontendBucketPolicy:
+    Type: AWS::S3::BucketPolicy
+    Properties:
+      Bucket: !Ref FrontendBucket
+      PolicyDocument:
+        Statement:
+          - Sid: PublicReadForWebsite
+            Effect: Allow
+            Principal: '*'
+            Action: s3:GetObject
+            Resource: !Sub "${FrontendBucket.Arn}/*"
+
+  PipelineArtifactBucket:
+    Type: AWS::S3::Bucket
+    Properties:
+      BucketName: !Ref ArtifactBucketName # Must be a unique name
+      VersioningConfiguration: {Status: Suspended}
+      
+  # ==================================================================
+  # 3. LAMBDA FUNCTIONS (Using SAM for simplicity in this template)
+  # ==================================================================
+  
+  # Lambda for indexing photos upon S3 upload
+  IndexLambda:
+    Type: AWS::Serverless::Function
+    Properties:
+      Handler: index.lambda_handler
+      Role: !GetAtt LambdaExecutionRole.Arn
+      Runtime: python3.9
+      Timeout: 60
+      FunctionName: photo-album-indexer-lambda
+      Environment:
+        Variables:
+          OS_ENDPOINT: !Ref OpenSearchEndpoint
+          OS_USER: 'admin' # Assuming you use these environment variables in your indexer code
+          OS_PASS: 'Admin123!' # Assuming you use these environment variables in your indexer code
+      # NOTE: The CodeUri is a placeholder. It MUST be packaged by the CLI before deployment.
+      CodeUri: s3://codepipeline-placeholder/
+
+  # Lambda for searching photos via Lex and OpenSearch
+  SearchLambda:
+    Type: AWS::Serverless::Function
+    Properties:
+      Handler: index.lambda_handler
+      Role: !GetAtt LambdaExecutionRole.Arn
+      Runtime: python3.9
+      Timeout: 30
+      FunctionName: photo-album-searcher-lambda
+      Environment:
+        Variables:
+          OS_ENDPOINT: !Ref OpenSearchEndpoint
+          OS_USER: 'admin'
+          OS_PASS: 'Admin123!'
+          BOT_ID: !Ref LexBotId
+          BOT_ALIAS_ID: !Ref LexBotAliasId
+          TARGET_BUCKET_NAME: !Ref PhotosBucket
+      CodeUri: s3://codepipeline-placeholder/
+
+  # ==================================================================
+  # 4. API GATEWAY (Using AWS::ApiGateway::RestApi for explicit control)
+  # ==================================================================
+  PhotoAPI:
+    Type: AWS::ApiGateway::RestApi
+    Properties:
+      Name: PhotoAlbumMaster
+      BinaryMediaTypes: [ '*/*' ] 
+
+  # Resources
+  ResSearch:
+    Type: AWS::ApiGateway::Resource
+    Properties: {RestApiId: !Ref PhotoAPI, ParentId: !GetAtt PhotoAPI.RootResourceId, PathPart: 'search'}
+  ResPhotos:
+    Type: AWS::ApiGateway::Resource
+    Properties: {RestApiId: !Ref PhotoAPI, ParentId: !GetAtt PhotoAPI.RootResourceId, PathPart: 'photos'}
+  ResItem:
+    Type: AWS::ApiGateway::Resource
+    Properties: {RestApiId: !Ref PhotoAPI, ParentId: !Ref ResPhotos, PathPart: '{item}'}
+
+  # Methods (Search: Lambda Proxy Integration)
+  MethodSearch:
+    Type: AWS::ApiGateway::Method
+    Properties:
+      RestApiId: !Ref PhotoAPI
+      ResourceId: !Ref ResSearch
+      HttpMethod: GET
+      AuthorizationType: NONE
+      Integration:
+        Type: AWS_PROXY
+        IntegrationHttpMethod: POST
+        Uri: !Sub "arn:aws:apigateway:${AWS::Region}:lambda:path/2015-03-31/functions/${SearchLambda.Arn}/invocations"
+      MethodResponses:
+        - StatusCode: 200
+
+  # Methods (Upload: S3 Passthrough Integration)
+  MethodUpload:
+    Type: AWS::ApiGateway::Method
+    Properties:
+      RestApiId: !Ref PhotoAPI
+      ResourceId: !Ref ResItem
+      HttpMethod: PUT
+      AuthorizationType: NONE
+      RequestParameters:
+        method.request.header.Content-Type: true
+        method.request.header.x-amz-meta-customLabels: true
+        method.request.path.item: true
+      Integration:
+        Type: AWS
+        IntegrationHttpMethod: PUT
+        Credentials: !GetAtt APIGatewayS3Role.Arn # Use the dedicated S3 role
+        Uri: !Sub arn:aws:apigateway:${AWS::Region}:s3:path/${PhotosBucket}/{item}
+        RequestParameters:
+          integration.request.header.Content-Type: 'method.request.header.Content-Type'
+          integration.request.header.x-amz-meta-customLabels: 'method.request.header.x-amz-meta-customLabels'
+          integration.request.path.item: 'method.request.path.item'
+        PassthroughBehavior: WHEN_NO_MATCH
+      MethodResponses:
+        - StatusCode: 200
+
+  # OPTIONS Methods for CORS
+  OptionsSearch:
+    Type: AWS::ApiGateway::Method
+    Properties:
+      RestApiId: !Ref PhotoAPI
+      ResourceId: !Ref ResSearch
+      HttpMethod: OPTIONS
+      AuthorizationType: NONE
+      Integration:
+        Type: MOCK
+        RequestTemplates: { application/json: '{"statusCode": 200}' }
+        PassthroughBehavior: WHEN_NO_MATCH
+        IntegrationResponses:
+          - StatusCode: 200
+            ResponseParameters:
+              method.response.header.Access-Control-Allow-Origin: "'*'"
+              method.response.header.Access-Control-Allow-Methods: "'GET,OPTIONS'"
+              method.response.header.Access-Control-Allow-Headers: "'Content-Type,X-Amz-Date,Authorization,X-Api-Key,X-Amz-Security-Token'"
+      MethodResponses:
+        - StatusCode: 200
+          ResponseParameters:
+            method.response.header.Access-Control-Allow-Origin: true
+            method.response.header.Access-Control-Allow-Methods: true
+            method.response.header.Access-Control-Allow-Headers: true
+            
+  OptionsUpload:
+    Type: AWS::ApiGateway::Method
+    Properties:
+      RestApiId: !Ref PhotoAPI
+      ResourceId: !Ref ResItem
+      HttpMethod: OPTIONS
+      AuthorizationType: NONE
+      Integration:
+        Type: MOCK
+        RequestTemplates: { application/json: '{"statusCode": 200}' }
+        PassthroughBehavior: WHEN_NO_MATCH
+        IntegrationResponses:
+          - StatusCode: 200
+            ResponseParameters:
+              method.response.header.Access-Control-Allow-Origin: "'*'"
+              method.response.header.Access-Control-Allow-Methods: "'PUT,OPTIONS'"
+              method.response.header.Access-Control-Allow-Headers: "'Content-Type,X-Amz-Date,Authorization,X-Api-Key,X-Amz-Security-Token,x-amz-meta-customLabels'"
+      MethodResponses:
+        - StatusCode: 200
+          ResponseParameters:
+            method.response.header.Access-Control-Allow-Origin: true
+            method.response.header.Access-Control-Allow-Methods: true
+            method.response.header.Access-Control-Allow-Headers: true
+
+  # Deployment (Note: StageName 'prod' is used here)
+  Deployment:
+    Type: AWS::ApiGateway::Deployment
+    DependsOn: [MethodSearch, MethodUpload, OptionsSearch, OptionsUpload]
+    Properties: {RestApiId: !Ref PhotoAPI, StageName: prod} # Use 'prod' stage name
+
+  # ==================================================================
+  # 5. PERMISSIONS & TRIGGERS
+  # ==================================================================
+  
+  # Permission for the API Gateway to invoke the Search Lambda
+  # CRITICAL FIX: Use /prod/*/* SourceArn pattern to bypass Early Validation check
+  SearchLambdaInvokePermission:
+    Type: AWS::Lambda::Permission
+    DependsOn: Deployment # Ensure deployment is done first
+    Properties:
+      FunctionName: !GetAtt SearchLambda.Arn
+      Action: lambda:InvokeFunction
+      Principal: apigateway.amazonaws.com
+      # Safest ARN pattern: API ID / Stage Name / Wildcard Resource / Wildcard Method
+      SourceArn: !Sub "arn:aws:execute-api:${AWS::Region}:${AWS::AccountId}:${PhotoAPI}/prod/*/*" 
+      
+  # Permission for S3 to invoke the Index Lambda (set up via NotificationConfiguration)
+  S3TriggerPermission:
+    Type: AWS::Lambda::Permission
+    Properties:
+      FunctionName: !GetAtt IndexLambda.Arn
+      Action: lambda:InvokeFunction
+      Principal: s3.amazonaws.com
+      SourceAccount: !Ref 'AWS::AccountId'
+      SourceArn: !GetAtt PhotosBucket.Arn
+
+  # ==================================================================
+  # 6. CI/CD CODEBUILD PROJECTS
+  # ==================================================================
+  
+  # P1 - Backend Build Project (Packages Lambdas for deployment)
+  BackendCodeBuildProject:
+    Type: AWS::CodeBuild::Project
+    Properties:
+      Name: !Sub "${AWS::StackName}-BackendBuild"
+      ServiceRole: !GetAtt CodeBuildServiceRole.Arn
+      Artifacts: {Type: CODEPIPELINE}
+      Environment:
+        Type: LINUX_CONTAINER
+        ComputeType: BUILD_GENERAL1_SMALL
+        Image: aws/codebuild/standard:5.0
+        EnvironmentVariables:
+          - Name: ARTIFACT_BUCKET
+            Value: !Ref PipelineArtifactBucket
+      Source: 
+        Type: CODEPIPELINE
+        BuildSpec: buildspec-backend.yml # Assumes you have this file in your repo
+
+  # P2 - Frontend Deploy Project (Deploys static assets to S3)
+  FrontendCodeBuildProject:
+    Type: AWS::CodeBuild::Project
+    Properties:
+      Name: !Sub "${AWS::StackName}-FrontendDeploy"
+      ServiceRole: !GetAtt CodeBuildServiceRole.Arn
+      Artifacts: {Type: CODEPIPELINE, Packaging: NONE}
+      Environment:
+        Type: LINUX_CONTAINER
+        ComputeType: BUILD_GENERAL1_SMALL
+        Image: aws/codebuild/standard:5.0
+        EnvironmentVariables:
+          - Name: FRONTEND_BUCKET
+            Value: !Ref FrontendBucket
+      Source: 
+        Type: CODEPIPELINE
+        BuildSpec: buildspec-frontend.yml # Assumes you have this file in your repo
+
+  # ==================================================================
+  # 7. CI/CD CODEPIPELINES
+  # ==================================================================
+  
+  # P1 - Backend Pipeline (Source -> Build -> Deploy Lambdas via CloudFormation)
+  BackendPipeline:
+    Type: AWS::CodePipeline::Pipeline
+    Properties:
+      RoleArn: !GetAtt CodePipelineServiceRole.Arn
+      Name: !Sub "${AWS::StackName}-Backend-P1"
+      ArtifactStore: {Type: S3, Location: !Ref PipelineArtifactBucket}
+      Stages:
+        - Name: Source
+          Actions:
+            - Name: GitHubSource
+              ActionTypeId: {Category: Source, Owner: ThirdParty, Provider: GitHub, Version: '1'}
+              Configuration:
+                Owner: !Ref GitHubOwner
+                Repo: !Ref GitHubRepo
+                Branch: !Ref GitHubBranch
+                PollForSourceChanges: 'true'
+                OAuthToken: !Ref GitHubOAuthToken
+              OutputArtifacts: [{Name: SourceArtifact}]
+              RunOrder: 1
+        - Name: Build
+          Actions:
+            - Name: BuildBackend
+              InputArtifacts: [{Name: SourceArtifact}]
+              ActionTypeId: {Category: Build, Owner: AWS, Provider: CodeBuild, Version: '1'}
+              Configuration: {ProjectName: !Ref BackendCodeBuildProject}
+              OutputArtifacts: [{Name: BuildArtifact}]
+              RunOrder: 1
+        - Name: Deploy
+          Actions:
+            - Name: DeployLambdaStack
+              ActionTypeId: {Category: Deploy, Owner: AWS, Provider: CloudFormation, Version: '1'}
+              Configuration:
+                ActionMode: REPLACE_ON_FAILURE
+                StackName: !Sub "${AWS::StackName}-LambdaDeployment" # Separate stack for the deploy step
+                TemplatePath: BuildArtifact::packaged-lambda-stack.yaml # Assumes buildspec creates this artifact
+                Capabilities: CAPABILITY_NAMED_IAM
+              InputArtifacts: [{Name: BuildArtifact}]
+              RunOrder: 1
+
+  # P2 - Frontend Pipeline (Source -> Deploy Static Assets via CodeBuild)
+  FrontendPipeline:
+    Type: AWS::CodePipeline::Pipeline
+    Properties:
+      RoleArn: !GetAtt CodePipelineServiceRole.Arn
+      Name: !Sub "${AWS::StackName}-Frontend-P2"
+      ArtifactStore: {Type: S3, Location: !Ref PipelineArtifactBucket}
+      Stages:
+        - Name: Source
+          Actions:
+            - Name: GitHubSource
+              ActionTypeId: {Category: Source, Owner: ThirdParty, Provider: GitHub, Version: '1'}
+              Configuration:
+                Owner: !Ref GitHubOwner
+                Repo: !Ref GitHubRepo
+                Branch: !Ref GitHubBranch
+                PollForSourceChanges: 'true'
+                OAuthToken: !Ref GitHubOAuthToken
+              OutputArtifacts: [{Name: SourceArtifactFrontend}]
+              RunOrder: 1
+        - Name: Deploy
+          Actions:
+            - Name: DeployFrontendAssets
+              ActionTypeId: {Category: Build, Owner: AWS, Provider: CodeBuild, Version: '1'}
+              Configuration: {ProjectName: !Ref FrontendCodeBuildProject}
+              InputArtifacts: [{Name: SourceArtifactFrontend}]
+              RunOrder: 1
+
+Outputs:
+  WebsiteURL:
+    Description: The URL for the publicly hosted frontend website.
+    Value: !GetAtt FrontendBucket.WebsiteURL
+  ApiUrl:
+    Description: API Gateway Endpoint URL for the 'prod' stage.
+    Value: !Sub "https://${PhotoAPI}.execute-api.${AWS::Region}.amazonaws.com/prod"
+  PhotosBucketName:
+    Description: The name of the S3 bucket for photo storage.
+    Value: !Ref PhotosBucket
