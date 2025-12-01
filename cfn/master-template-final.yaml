@@ -370,8 +370,8 @@ Resources:
             - Name: GetSource
               ActionTypeId: {Category: Source, Owner: ThirdParty, Provider: GitHub, Version: '1'}
               Configuration:
-                Owner: advaitnaresh
-                Repo: Smart-Cloud-Album
+                Owner: tilak30
+                Repo: photoAlbum
                 Branch: main
                 PollForSourceChanges: 'true'
                 OAuthToken: !Ref GitHubOAuthToken
