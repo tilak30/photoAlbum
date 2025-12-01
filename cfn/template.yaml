@@ -209,7 +209,7 @@ Resources:
       Action: lambda:InvokeFunction
       FunctionName: !GetAtt SearcherFunction.Arn
       Principal: apigateway.amazonaws.com
-      SourceArn: !Sub arn:aws:execute-api:${AWS::Region}:${AWS::AccountId}:${PhotoAlbumApi}/prod/GET/search'
+      SourceArn: !Sub arn:aws:execute-api:${AWS::Region}:${AWS::AccountId}:${PhotoAlbumApi}/prod/GET/search # FIXED: Removed trailing single quote
 
   # The implicit deployment created by SAM will pick up the explicitly defined SearchMethod.
   
