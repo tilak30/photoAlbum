@@ -209,7 +209,17 @@ Resources:
       Action: lambda:InvokeFunction
       FunctionName: !GetAtt SearcherFunction.Arn
       Principal: apigateway.amazonaws.com
-      SourceArn: !Sub arn:aws:execute-api:${AWS::Region}:${AWS::AccountId}:${PhotoAlbumApi}/prod/GET/search # FIXED: Removed trailing single quote
+      # FIX: Changing from !Sub to !Join to ensure the SourceArn is correctly resolved by the validator.
+      # The Ref to PhotoAlbumApi returns the RestApiId.
+      SourceArn: !Join 
+        - ""
+        - - "arn:aws:execute-api:"
+          - !Ref "AWS::Region"
+          - ":"
+          - !Ref "AWS::AccountId"
+          - ":"
+          - !Ref PhotoAlbumApi # This resolves to the RestApiId
+          - "/prod/GET/search" 
 
   # The implicit deployment created by SAM will pick up the explicitly defined SearchMethod.
   
