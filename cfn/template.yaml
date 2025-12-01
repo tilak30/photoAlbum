@@ -118,7 +118,7 @@ Resources:
       Runtime: python3.9
       Timeout: 60
       Role: !GetAtt LambdaExecutionRole.Arn
-      CodeUri: backend/lf1_deployment/
+      CodeUri: ../backend/lf1_deployment/ # <--- FIXED PATH
       Environment:
         Variables:
           OPENSEARCH_HOST: !Ref OpenSearchHost
@@ -132,7 +132,7 @@ Resources:
       Runtime: python3.9
       Timeout: 15
       Role: !GetAtt LambdaExecutionRole.Arn
-      CodeUri: backend/lf2_deployment/
+      CodeUri: ../backend/lf2_deployment/ # <--- FIXED PATH
       Environment:
         Variables:
           ES_HOST: !Ref OpenSearchHost
@@ -215,7 +215,6 @@ Resources:
             Value: !Ref ArtifactBucketName
       Source: 
         Type: CODEPIPELINE
-        # Use external BuildSpec file for better separation and readability
         BuildSpec: buildspec-backend.yml
 
   # ----------------------------------------------------------------
@@ -225,7 +224,7 @@ Resources:
     Type: AWS::CodeBuild::Project
     Properties:
       Name: PhotoAlbumFrontendDeploy
-      ServiceRole: !GetAtt P1CodeBuildRole.Arn # Reuse the same role with S3 access
+      ServiceRole: !GetAtt P1CodeBuildRole.Arn
       Artifacts: { Type: CODEPIPELINE, Packaging: NONE }
       Environment:
         Type: LINUX_CONTAINER
@@ -264,7 +263,7 @@ Resources:
                 Action: [codebuild:StartBuild, codebuild:StopBuild, codebuild:BatchGetBuilds]
                 Resource: 
                   - !GetAtt P1CodeBuildProject.Arn
-                  - !GetAtt P2CodeBuildProject.Arn # Added P2 project
+                  - !GetAtt P2CodeBuildProject.Arn
               - Effect: Allow
                 Action: [cloudformation:*]
                 Resource: !Sub arn:aws:cloudformation:${AWS::Region}:${AWS::AccountId}:stack/PhotoAlbumFullStackT1/*
@@ -330,7 +329,7 @@ Resources:
               Configuration:
                 ActionMode: CREATE_UPDATE
                 StackName: PhotoAlbumFullStackT1
-                TemplatePath: BuildArtifact::packaged.yaml # packaged.yaml is the expected output file from P1CodeBuildProject
+                TemplatePath: BuildArtifact::packaged.yaml
                 RoleArn: !GetAtt PipelineDeploymentRole.Arn
                 Capabilities: CAPABILITY_NAMED_IAM,CAPABILITY_AUTO_EXPAND
               InputArtifacts:
@@ -362,7 +361,6 @@ Resources:
               RunOrder: 1
         - Name: Deploy
           Actions:
-            # Use CodeBuild to run 'aws s3 sync frontend/' to deploy to the S3 bucket root correctly
             - Name: DeployFrontend
               ActionTypeId: { Category: Build, Owner: AWS, Provider: CodeBuild, Version: '1' }
               Configuration:
