@@ -1,0 +1,22 @@
+version: 0.2
+
+# This CodeBuild spec is executed by P1CodeBuildProject for the backend.
+# It uses SAM/CloudFormation's 'package' command to zip the Lambda code 
+# and update the CloudFormation template to reference the S3 locations.
+phases:
+  install:
+    runtime-versions:
+      python: 3.9
+    commands:
+      - echo "Starting backend packaging process..."
+      
+  build:
+    commands:
+      # ARTIFACT_BUCKET is passed via environment variable from the CFN template
+      # Output file must match the TemplatePath in the CodePipeline deploy stage
+      - aws cloudformation package --template-file cfn/template.yaml --s3-bucket $ARTIFACT_BUCKET --output-template-file packaged.yaml
+
+artifacts:
+  files:
+    - packaged.yaml
+  discard-paths: yes

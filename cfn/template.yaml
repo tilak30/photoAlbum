@@ -1,0 +1,380 @@
+AWSTemplateFormatVersion: '2010-09-09'
+Transform: AWS::Serverless-2016-10-31
+Description: Complete Photo Album App Stack (App + CI/CD Pipelines)
+
+Parameters:
+  # Application Specific Parameters
+  OpenSearchHost:
+    Type: String
+    Default: search-photos-eliyvit6bhto2sctejudtas4sm.us-east-1.es.amazonaws.com
+  LexBotId:
+    Type: String
+    Default: S8YGIKNQ45
+  LexBotAliasId:
+    Type: String
+    Default: KYZRHAD1NL
+  FrontendBucketName:
+    Type: String
+    Default: photo-frontendb2-tilak
+    
+  # CI/CD Specific Parameters
+  GitHubRepoName:
+    Type: String
+    Default: photoAlbum
+  GitHubBranchName:
+    Type: String
+    Default: main
+  GitHubOwner:
+    Type: String
+    Default: tilak30
+  GitHubToken:
+    Type: String
+    Description: GitHub Personal Access Token (PAT) for CodePipeline Source Action. Set the value to your PAT during deployment.
+    NoEcho: true
+  ArtifactBucketName:
+    Type: String
+    Description: The name of the S3 bucket used by CodePipeline for artifacts (must be globally unique and created beforehand).
+    Default: photo-pipeline-artifacts-tilak-unique 
+
+Resources:
+  # =================================================================
+  # 1. APPLICATION IAM & ROLES
+  # =================================================================
+
+  LambdaExecutionRole:
+    Type: AWS::IAM::Role
+    Properties:
+      AssumeRolePolicyDocument:
+        Version: '2012-10-17'
+        Statement:
+          - Effect: Allow
+            Principal: { Service: lambda.amazonaws.com }
+            Action: sts:AssumeRole
+      ManagedPolicyArns:
+        - arn:aws:iam::aws:policy/service-role/AWSLambdaBasicExecutionRole
+      Policies:
+        - PolicyName: ApplicationAccess
+          PolicyDocument:
+            Version: '2012-10-17'
+            Statement:
+              - Effect: Allow
+                Action: [es:ESHttpGet, es:ESHttpPut, es:ESHttpPost]
+                Resource: !Sub arn:aws:es:${AWS::Region}:${AWS::AccountId}:domain/*
+              - Effect: Allow
+                Action: [rekognition:DetectLabels]
+                Resource: "*"
+              - Effect: Allow
+                Action: [lex:RecognizeText]
+                Resource: 
+                  - !Sub arn:aws:lex:${AWS::Region}:${AWS::AccountId}:bot/${LexBotId}
+                  - !Sub arn:aws:lex:${AWS::Region}:${AWS::AccountId}:bot-alias/${LexBotId}/${LexBotAliasId}
+              - Effect: Allow
+                Action: [s3:GetObject, s3:HeadObject]
+                Resource: !Sub arn:aws:s3:::${PhotoStorageBucket}/*
+        
+  # =================================================================
+  # 2. APPLICATION RESOURCES (T1 CORE)
+  # =================================================================
+  PhotoStorageBucket:
+    Type: AWS::S3::Bucket
+    Properties:
+      BucketName: photo-storageb2-tilak # User-provided unique bucket name
+      CorsConfiguration:
+        CorsRules:
+          - AllowedHeaders: ['*']
+            AllowedMethods: [GET, PUT, POST, DELETE, HEAD]
+            AllowedOrigins: ['*']
+            MaxAge: '3000'
+      NotificationConfiguration:
+        LambdaConfigurations:
+          - Event: s3:ObjectCreated:*
+            Filter: { S3Key: { Rules: [{ Name: suffix, Value: .jpg }] } }
+            Function: !GetAtt IndexerFunction.Arn
+
+  FrontendHostingBucket:
+    Type: AWS::S3::Bucket
+    Properties:
+      BucketName: !Ref FrontendBucketName
+      WebsiteConfiguration: { IndexDocument: index.html, ErrorDocument: index.html }
+      AccessControl: PublicRead
+      
+  FrontendBucketPolicy:
+    Type: AWS::S3::BucketPolicy
+    Properties:
+      Bucket: !Ref FrontendHostingBucket
+      PolicyDocument:
+        Statement:
+          - Sid: PublicReadGetObject
+            Effect: Allow
+            Principal: '*'
+            Action: s3:GetObject
+            Resource: !Join ['', ['arn:aws:s3:::', !Ref FrontendHostingBucket, '/*']]
+
+  IndexerFunction:
+    Type: AWS::Serverless::Function
+    Properties:
+      FunctionName: index-photos-tb3525
+      Handler: lambda_function.lambda_handler
+      Runtime: python3.9
+      Timeout: 60
+      Role: !GetAtt LambdaExecutionRole.Arn
+      CodeUri: backend/lf1_deployment/
+      Environment:
+        Variables:
+          OPENSEARCH_HOST: !Ref OpenSearchHost
+          AWS_REGION: !Ref 'AWS::Region'
+          
+  SearcherFunction:
+    Type: AWS::Serverless::Function
+    Properties:
+      FunctionName: search-photos-tb3525
+      Handler: lambda_function.lambda_handler
+      Runtime: python3.9
+      Timeout: 15
+      Role: !GetAtt LambdaExecutionRole.Arn
+      CodeUri: backend/lf2_deployment/
+      Environment:
+        Variables:
+          ES_HOST: !Ref OpenSearchHost
+          LEX_BOT_ID: !Ref LexBotId
+          LEX_BOT_ALIAS_ID: !Ref LexBotAliasId
+          AWS_REGION: 'us-east-1' 
+      Events:
+        ApiTrigger:
+          Type: Api
+          Properties:
+            Path: /search
+            Method: GET
+            RestApiId: !Ref PhotoAlbumApi
+            
+  S3InvokePermission:
+    Type: AWS::Lambda::Permission
+    Properties:
+      Action: 'lambda:InvokeFunction'
+      FunctionName: !GetAtt IndexerFunction.Arn
+      Principal: s3.amazonaws.com
+      SourceAccount: !Ref 'AWS::AccountId'
+      SourceArn: !GetAtt PhotoStorageBucket.Arn
+
+  PhotoAlbumApi:
+    Type: AWS::Serverless::Api
+    Properties:
+      StageName: prod
+      Cors:
+        AllowMethods: "'GET,OPTIONS'"
+        AllowHeaders: "'Content-Type,X-Amz-Date,Authorization,X-Api-Key,X-Amz-Security-Token'"
+        AllowOrigin: "'*'"
+        
+  # =================================================================
+  # 3. CI/CD RESOURCES (P1 & P2 DEFINITION)
+  # =================================================================
+  
+  P1CodeBuildRole:
+    Type: AWS::IAM::Role
+    Properties:
+      AssumeRolePolicyDocument:
+        Version: '2012-10-17'
+        Statement:
+          - Effect: Allow
+            Principal: { Service: codebuild.amazonaws.com }
+            Action: sts:AssumeRole
+      ManagedPolicyArns:
+        - arn:aws:iam::aws:policy/AWSCodeBuildDeveloperAccess
+      Policies:
+        - PolicyName: CodeBuildS3Access
+          PolicyDocument:
+            Version: '2012-10-17'
+            Statement:
+              - Effect: Allow
+                Action:
+                  - s3:GetObject
+                  - s3:GetObjectVersion
+                  - s3:GetBucketVersioning
+                  - s3:PutObject
+                  - s3:PutObjectAcl
+                  - s3:ListBucket
+                Resource: 
+                  - !Sub arn:aws:s3:::${ArtifactBucketName}
+                  - !Sub arn:aws:s3:::${ArtifactBucketName}/*
+              
+  # ----------------------------------------------------------------
+  # 3a. P1 Backend CodeBuild Project (Builds and Packages Lambdas)
+  # ----------------------------------------------------------------
+  P1CodeBuildProject:
+    Type: AWS::CodeBuild::Project
+    Properties:
+      Name: PhotoAlbumBackendBuild
+      ServiceRole: !GetAtt P1CodeBuildRole.Arn
+      Artifacts: { Type: CODEPIPELINE }
+      Environment:
+        Type: LINUX_CONTAINER
+        ComputeType: BUILD_GENERAL1_SMALL
+        Image: aws/codebuild/standard:5.0
+        EnvironmentVariables:
+          - Name: ARTIFACT_BUCKET
+            Value: !Ref ArtifactBucketName
+      Source: 
+        Type: CODEPIPELINE
+        # Use external BuildSpec file for better separation and readability
+        BuildSpec: buildspec-backend.yml
+
+  # ----------------------------------------------------------------
+  # 3b. P2 Frontend CodeBuild Project (Deploys Static Website)
+  # ----------------------------------------------------------------
+  P2CodeBuildProject:
+    Type: AWS::CodeBuild::Project
+    Properties:
+      Name: PhotoAlbumFrontendDeploy
+      ServiceRole: !GetAtt P1CodeBuildRole.Arn # Reuse the same role with S3 access
+      Artifacts: { Type: CODEPIPELINE, Packaging: NONE }
+      Environment:
+        Type: LINUX_CONTAINER
+        ComputeType: BUILD_GENERAL1_SMALL
+        Image: aws/codebuild/standard:5.0
+        EnvironmentVariables:
+          - Name: FRONTEND_BUCKET_NAME
+            Value: !Ref FrontendBucketName
+      Source: 
+        Type: CODEPIPELINE
+        BuildSpec: buildspec-frontend.yml
+
+  # ----------------------------------------------------------------
+  # 3c. Pipeline Role and Deployment Role
+  # ----------------------------------------------------------------
+  P1PipelineRole:
+    Type: AWS::IAM::Role
+    Properties:
+      AssumeRolePolicyDocument:
+        Version: '2012-10-17'
+        Statement:
+          - Effect: Allow
+            Principal: { Service: codepipeline.amazonaws.com }
+            Action: sts:AssumeRole
+      Policies:
+        - PolicyName: CodePipelineServiceAccess
+          PolicyDocument:
+            Version: '2012-10-17'
+            Statement:
+              - Effect: Allow
+                Action: [s3:GetObject, s3:GetObjectVersion, s3:GetBucketVersioning, s3:PutObject, s3:ListBucket]
+                Resource: 
+                  - !Sub arn:aws:s3:::${ArtifactBucketName}
+                  - !Sub arn:aws:s3:::${ArtifactBucketName}/*
+              - Effect: Allow
+                Action: [codebuild:StartBuild, codebuild:StopBuild, codebuild:BatchGetBuilds]
+                Resource: 
+                  - !GetAtt P1CodeBuildProject.Arn
+                  - !GetAtt P2CodeBuildProject.Arn # Added P2 project
+              - Effect: Allow
+                Action: [cloudformation:*]
+                Resource: !Sub arn:aws:cloudformation:${AWS::Region}:${AWS::AccountId}:stack/PhotoAlbumFullStackT1/*
+              - Effect: Allow
+                Action: [iam:PassRole]
+                Resource: "*"
+                Condition:
+                  StringEquals:
+                    iam:PassedToService: 
+                      - cloudformation.amazonaws.com
+                      - codebuild.amazonaws.com
+                      
+  PipelineDeploymentRole:
+    Type: AWS::IAM::Role
+    Properties:
+      AssumeRolePolicyDocument:
+        Version: '2012-10-17'
+        Statement:
+          - Effect: Allow
+            Principal: { Service: cloudformation.amazonaws.com }
+            Action: sts:AssumeRole
+      ManagedPolicyArns:
+        - arn:aws:iam::aws:policy/AdministratorAccess
+
+  # ----------------------------------------------------------------
+  # 3d. P1 Backend CodePipeline
+  # ----------------------------------------------------------------
+  P1BackendPipeline:
+    Type: AWS::CodePipeline::Pipeline
+    Properties:
+      Name: PhotoAlbumBackendPipeline
+      RoleArn: !GetAtt P1PipelineRole.Arn
+      ArtifactStore: { Type: S3, Location: !Ref ArtifactBucketName }
+      Stages:
+        - Name: Source
+          Actions:
+            - Name: GitHubSource
+              ActionTypeId: { Category: Source, Owner: ThirdParty, Provider: GitHub, Version: '1' }
+              Configuration:
+                Owner: !Ref GitHubOwner
+                Repo: !Ref GitHubRepoName
+                Branch: !Ref GitHubBranchName
+                OAuthToken: !Ref GitHubToken
+                OutputArtifactFormat: CODE_ZIP
+              OutputArtifacts:
+                - Name: SourceArtifact
+              RunOrder: 1
+        - Name: Build
+          Actions:
+            - Name: BuildLambda
+              ActionTypeId: { Category: Build, Owner: AWS, Provider: CodeBuild, Version: '1' }
+              Configuration:
+                ProjectName: !Ref P1CodeBuildProject
+              InputArtifacts:
+                - Name: SourceArtifact
+              OutputArtifacts:
+                - Name: BuildArtifact
+              RunOrder: 1
+        - Name: Deploy
+          Actions:
+            - Name: DeployStack
+              ActionTypeId: { Category: Deploy, Owner: AWS, Provider: CloudFormation, Version: '1' }
+              Configuration:
+                ActionMode: CREATE_UPDATE
+                StackName: PhotoAlbumFullStackT1
+                TemplatePath: BuildArtifact::packaged.yaml # packaged.yaml is the expected output file from P1CodeBuildProject
+                RoleArn: !GetAtt PipelineDeploymentRole.Arn
+                Capabilities: CAPABILITY_NAMED_IAM,CAPABILITY_AUTO_EXPAND
+              InputArtifacts:
+                - Name: BuildArtifact
+              RunOrder: 1
+
+  # ----------------------------------------------------------------
+  # 3e. P2 Frontend CodePipeline
+  # ----------------------------------------------------------------
+  P2FrontendPipeline:
+    Type: AWS::CodePipeline::Pipeline
+    Properties:
+      Name: PhotoAlbumFrontendPipeline
+      RoleArn: !GetAtt P1PipelineRole.Arn
+      ArtifactStore: { Type: S3, Location: !Ref ArtifactBucketName }
+      Stages:
+        - Name: Source
+          Actions:
+            - Name: GitHubSource
+              ActionTypeId: { Category: Source, Owner: ThirdParty, Provider: GitHub, Version: '1' }
+              Configuration:
+                Owner: !Ref GitHubOwner
+                Repo: !Ref GitHubRepoName
+                Branch: !Ref GitHubBranchName
+                OAuthToken: !Ref GitHubToken
+                OutputArtifactFormat: CODE_ZIP
+              OutputArtifacts:
+                - Name: FrontendSource
+              RunOrder: 1
+        - Name: Deploy
+          Actions:
+            # Use CodeBuild to run 'aws s3 sync frontend/' to deploy to the S3 bucket root correctly
+            - Name: DeployFrontend
+              ActionTypeId: { Category: Build, Owner: AWS, Provider: CodeBuild, Version: '1' }
+              Configuration:
+                ProjectName: !Ref P2CodeBuildProject
+              InputArtifacts:
+                - Name: FrontendSource
+              RunOrder: 1
+
+Outputs:
+  WebsiteURL:
+    Description: The URL for the publicly hosted frontend website.
+    Value: !GetAtt FrontendHostingBucket.WebsiteURL
+  ApiUrl:
+    Description: API Gateway Endpoint URL for the 'search' resource.
+    Value: !Sub "https://${PhotoAlbumApi}.execute-api.${AWS::Region}.amazonaws.com/prod"
